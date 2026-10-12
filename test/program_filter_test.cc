@@ -28,8 +28,10 @@
 #include "test_helper.hh"
 
 namespace {
+// Use ts::Time::UnixEpoch instead of ts::Time().  The epoch of ts::Time depends on the platform
+// (1970 on Unix, 1601 on Windows) and times in test data are based on the Unix epoch.
 const ProgramFilterOption kOption{
-    0x0001, 0x1001, 0x0901, 0, ts::Time(), {}, {}, 0, 0, std::nullopt, false};
+    0x0001, 0x1001, 0x0901, 0, ts::Time::UnixEpoch, {}, {}, 0, 0, std::nullopt, false};
 }
 
 TEST(ProgramFilterTest, NoPacket) {

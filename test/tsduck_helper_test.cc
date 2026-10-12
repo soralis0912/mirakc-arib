@@ -49,7 +49,13 @@ TEST(TsduckHelperTest, MakeEventsJsonValue) {
   auto events = MakeEventsJsonValue(eit, allocator);
   EXPECT_EQ(1, events.Size());
   EXPECT_EQ(1, events[0]["eventId"]);
+#if defined(_WIN32)
+  // The epoch of ts::Time is 1601-01-01 on Windows.  So, MJD 0 (1858-11-17) can be represented.
+  EXPECT_EQ(-40587LL * 86400000 - 9 * 3600000, events[0]["startTime"].GetInt64());
+#else
+  // MJD 0 (1858-11-17) is before the epoch of ts::Time (1970-01-01) and it's clamped to the epoch.
   EXPECT_EQ(-9 * 3600000, events[0]["startTime"]);
+#endif
   EXPECT_EQ(12 * 3600000 + 34 * 60000 + 56000, events[0]["duration"]);
   EXPECT_TRUE(events[0]["scrambled"].IsFalse());
   EXPECT_EQ(0, events[0]["descriptors"].Size());

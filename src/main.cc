@@ -26,8 +26,13 @@
 #include <memory>
 #include <string>
 
-#include <unistd.h>
+#include <fcntl.h>
 #include <sys/types.h>
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <docopt/docopt.h>
 #include <fmt/format.h>
@@ -917,6 +922,63 @@ Examples:
     ...
 )";
 
+#if defined(_WIN32)
+// Files must be opened in the binary mode on Windows.  64-bit versions of functions are used
+// explicitly for large files used in timeshift recording.
+namespace posix {
+constexpr int kStdinFd = 0;
+constexpr int kStdoutFd = 1;
+inline int Open(const char* path, int flags, int mode = 0) {
+  return ::_open(path, flags | _O_BINARY | _O_NOINHERIT, mode);
+}
+inline ssize_t Read(int fd, void* buf, size_t len) {
+  return ::_read(fd, buf, static_cast<unsigned int>(len));
+}
+inline ssize_t Write(int fd, const void* buf, size_t len) {
+  return ::_write(fd, buf, static_cast<unsigned int>(len));
+}
+inline int Close(int fd) {
+  return ::_close(fd);
+}
+inline int Sync(int fd) {
+  return ::_commit(fd);
+}
+inline int Trunc(int fd, int64_t size) {
+  errno = ::_chsize_s(fd, size);
+  return errno == 0 ? 0 : -1;
+}
+inline int64_t Seek(int fd, int64_t offset, int whence) {
+  return ::_lseeki64(fd, offset, whence);
+}
+}  // namespace posix
+#else
+namespace posix {
+constexpr int kStdinFd = STDIN_FILENO;
+constexpr int kStdoutFd = STDOUT_FILENO;
+inline int Open(const char* path, int flags, int mode = 0) {
+  return ::open(path, flags, mode);
+}
+inline ssize_t Read(int fd, void* buf, size_t len) {
+  return ::read(fd, buf, len);
+}
+inline ssize_t Write(int fd, const void* buf, size_t len) {
+  return ::write(fd, buf, len);
+}
+inline int Close(int fd) {
+  return ::close(fd);
+}
+inline int Sync(int fd) {
+  return ::fsync(fd);
+}
+inline int Trunc(int fd, int64_t size) {
+  return ::ftruncate(fd, static_cast<off_t>(size));
+}
+inline int64_t Seek(int fd, int64_t offset, int whence) {
+  return static_cast<int64_t>(::lseek(fd, static_cast<off_t>(offset), whence));
+}
+}  // namespace posix
+#endif
+
 class PosixFile final : public File {
  public:
   enum class Mode { kWrite };
@@ -925,10 +987,10 @@ class PosixFile final : public File {
     if (path.empty()) {
       stdio_ = true;
       path_ = "<stdin>";
-      fd_ = STDIN_FILENO;
+      fd_ = posix::kStdinFd;
       MIRAKC_ARIB_INFO("Read packets from STDIN...");
     } else {
-      fd_ = open(path.c_str(), O_RDONLY);
+      fd_ = posix::Open(path.c_str(), O_RDONLY);
       if (fd_ > 0) {
         MIRAKC_ARIB_INFO("Read packets from {}...", path);
       } else {
@@ -941,10 +1003,10 @@ class PosixFile final : public File {
     if (path.empty()) {
       stdio_ = true;
       path_ = "<stdout>";
-      fd_ = STDOUT_FILENO;
+      fd_ = posix::kStdoutFd;
       MIRAKC_ARIB_INFO("Write packets to STDOUT...");
     } else {
-      fd_ = open(path.c_str(), O_CREAT | O_RDWR, 0644);
+      fd_ = posix::Open(path.c_str(), O_CREAT | O_RDWR, 0644);
       if (fd_ > 0) {
         MIRAKC_ARIB_INFO("Write packets to {}...", path);
       } else {
@@ -955,7 +1017,7 @@ class PosixFile final : public File {
 
   ~PosixFile() override {
     if (!stdio_) {
-      close(fd_);
+      posix::Close(fd_);
     }
   }
 
@@ -964,7 +1026,7 @@ class PosixFile final : public File {
   }
 
   ssize_t Read(uint8_t* buf, size_t len) override {
-    auto result = read(fd_, reinterpret_cast<void*>(buf), len);
+    auto result = posix::Read(fd_, reinterpret_cast<void*>(buf), len);
     if (result < 0) {
       MIRAKC_ARIB_ERROR("Failed to read from {}: {} ({})", path_, std::strerror(errno), errno);
     }
@@ -972,7 +1034,7 @@ class PosixFile final : public File {
   }
 
   ssize_t Write(uint8_t* buf, size_t len) override {
-    auto result = write(fd_, reinterpret_cast<void*>(buf), len);
+    auto result = posix::Write(fd_, reinterpret_cast<void*>(buf), len);
     if (result < 0) {
       MIRAKC_ARIB_ERROR("Failed to write to {}: {} ({})", path_, std::strerror(errno), errno);
     }
@@ -981,7 +1043,7 @@ class PosixFile final : public File {
 
   bool Sync() override {
     MIRAKC_ARIB_ASSERT(!stdio_);
-    if (fsync(fd_) < 0) {
+    if (posix::Sync(fd_) < 0) {
       MIRAKC_ARIB_ERROR("Failed to sync {}: {} ({})", path_, std::strerror(errno), errno);
       return false;
     }
@@ -990,7 +1052,7 @@ class PosixFile final : public File {
 
   bool Trunc(int64_t size) override {
     MIRAKC_ARIB_ASSERT(!stdio_);
-    auto result = ftruncate(fd_, static_cast<off_t>(size));
+    auto result = posix::Trunc(fd_, size);
     if (result < 0) {
       MIRAKC_ARIB_ERROR(
           "Failed to truncate {} to {}: {} ({})", path_, size, std::strerror(errno), errno);
@@ -1014,7 +1076,7 @@ class PosixFile final : public File {
         break;
     }
 
-    auto result = lseek(fd_, static_cast<off_t>(offset), whence);
+    auto result = posix::Seek(fd_, offset, whence);
     if (result < 0) {
       MIRAKC_ARIB_ERROR("Failed to seek {}: {} ({})", path_, std::strerror(errno), errno);
       return -1;
@@ -1443,6 +1505,12 @@ void ShowHelp(const Args& args) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+#if defined(_WIN32)
+  // TS packets and JSONL data must be transferred without any conversion.
+  _setmode(posix::kStdinFd, _O_BINARY);
+  _setmode(posix::kStdoutFd, _O_BINARY);
+#endif
+
   spdlog::cfg::load_env_levels("MIRAKC_ARIB_LOG");
 
   const auto* keep_unicode_symbols = std::getenv("MIRAKC_ARIB_KEEP_UNICODE_SYMBOLS");

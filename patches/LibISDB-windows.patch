@@ -1,0 +1,155 @@
+diff --git a/LibISDB/Base/ARIBString.cpp b/LibISDB/Base/ARIBString.cpp
+index b95dc8e..ebbf7a4 100644
+--- a/LibISDB/Base/ARIBString.cpp
++++ b/LibISDB/Base/ARIBString.cpp
+@@ -149,7 +149,7 @@ bool ARIBStringDecoder::DecodeInternal(
+ 	m_UseCharSize   = !!(Flags & DecodeFlag::UseCharSize);
+ 	m_UnicodeSymbol = !!(Flags & DecodeFlag::UnicodeSymbol);
+ 
+-#if defined(LIBISDB_WINDOWS) && !defined(LIBISDB_WCHAR)
++#if defined(LIBISDB_WINDOWS) && !defined(LIBISDB_WCHAR) && !defined(LIBISDB_FORCE_UTF8)
+ 	// 一応 UNICODE でなくてもコンパイルできるようにはしているが、
+ 	// 日本語ロケール(CP932)以外では多くの文字が変換できないため実用にならない
+ 	InternalString String;
+diff --git a/LibISDB/Base/ARIBString.hpp b/LibISDB/Base/ARIBString.hpp
+index 70c3777..ac5fcb3 100644
+--- a/LibISDB/Base/ARIBString.hpp
++++ b/LibISDB/Base/ARIBString.hpp
+@@ -29,7 +29,8 @@
+ 
+ 
+ // ARIB 文字列の変換に内部的に使うエンコーディング
+-#if defined(LIBISDB_WCHAR) || defined(LIBISDB_WINDOWS)
++// LIBISDB_FORCE_UTF8: Windows でも UTF-8 を使う (mirakc-arib)
++#if (defined(LIBISDB_WCHAR) || defined(LIBISDB_WINDOWS)) && !defined(LIBISDB_FORCE_UTF8)
+ #define LIBISDB_ARIB_STR_IS_WCHAR
+ #else
+ #define LIBISDB_ARIB_STR_IS_UTF8
+diff --git a/LibISDB/Base/FileStreamGenericC.cpp b/LibISDB/Base/FileStreamGenericC.cpp
+index 066be9d..739659a 100644
+--- a/LibISDB/Base/FileStreamGenericC.cpp
++++ b/LibISDB/Base/FileStreamGenericC.cpp
+@@ -28,7 +28,7 @@
+ #include "FileStreamGenericC.hpp"
+ #include "../Utilities/StringUtilities.hpp"
+ 
+-#ifdef _MSC_VER
++#ifdef _WIN32
+ #include <io.h>
+ #include <share.h>
+ #elif !defined(LIBISDB_NO_POSIX_FILE)
+@@ -97,7 +97,7 @@ bool FileStreamGenericC::Open(const CStringView &FileName, OpenFlag Flags)
+ 
+ 	std::FILE *pFile;
+ 
+-#ifdef _MSC_VER
++#ifdef _WIN32
+ 
+ 	if (!!(Flags & OpenFlag::SequentialRead))
+ 		StringAppend(Mode, LIBISDB_STR("S"));
+@@ -226,7 +226,7 @@ FileStreamGenericC::SizeType FileStreamGenericC::GetSize()
+ 		return 0;
+ 	}
+ 
+-#ifdef _MSC_VER
++#ifdef _WIN32
+ 
+ 	// MSVC
+ 
+@@ -272,7 +272,7 @@ FileStreamGenericC::OffsetType FileStreamGenericC::GetPos()
+ 		return 0;
+ 	}
+ 
+-#ifdef _MSC_VER
++#ifdef _WIN32
+ 	const __int64 Pos = ::_ftelli64(m_File.get());
+ #elif !defined(LIBISDB_NO_POSIX_FILE)
+ 	const ::off_t Pos = ::ftello(m_File.get());
+@@ -303,7 +303,7 @@ bool FileStreamGenericC::SetPos(OffsetType Pos, SetPosType Type)
+ 		return false;
+ 	}
+ 
+-#ifdef _MSC_VER
++#ifdef _WIN32
+ 	return ::_fseeki64(m_File.get(), Pos, Origin) == 0;
+ #elif !defined(LIBISDB_NO_POSIX_FILE)
+ 	return ::fseeko(m_File.get(), Pos, Origin) == 0;
+diff --git a/LibISDB/Base/FileStreamPOSIX.cpp b/LibISDB/Base/FileStreamPOSIX.cpp
+index 7545122..c06a564 100644
+--- a/LibISDB/Base/FileStreamPOSIX.cpp
++++ b/LibISDB/Base/FileStreamPOSIX.cpp
+@@ -46,16 +46,20 @@ namespace
+ 
+ #ifdef LIBISDB_WINDOWS
+ 
++#ifndef __MINGW32__ // provided by MinGW-w64
+ typedef __int64 off64_t;
+ #ifdef _WIN64
+ typedef __int64 ssize_t;
+ #else
+ typedef long ssize_t;
+ #endif
++#endif
+ 
+ inline int posix_close(int fd) { return ::_close(fd); }
+ inline int fsync(int fd) { return ::_commit(fd); }
++#ifndef __MINGW32__ // provided by MinGW-w64
+ inline off64_t lseek64(int fd, off64_t offset, int origin) { return ::_lseeki64(fd, offset, origin); }
++#endif
+ inline off64_t tell64(int fd) { return ::_telli64(fd); }
+ inline off64_t filelength64(int fd) { return ::_filelengthi64(fd); }
+ 
+diff --git a/LibISDB/Utilities/StringUtilities.hpp b/LibISDB/Utilities/StringUtilities.hpp
+index dbc3850..24c778a 100644
+--- a/LibISDB/Utilities/StringUtilities.hpp
++++ b/LibISDB/Utilities/StringUtilities.hpp
+@@ -74,7 +74,7 @@ LIBISDB_PRAGMA_MSVC(warning(disable:4996))
+ 	inline void StringCopy(wchar_t *pDstString, const wchar_t *pSrcString) { std::wcscpy(pDstString, pSrcString); }
+ LIBISDB_PRAGMA_MSVC(warning(pop))
+ 
+-#if defined(_MSC_VER)
++#if defined(_WIN32)
+ 	inline void StringCopy(char *pDstString, const char *pSrcString, std::size_t Length) {
+ 		::strncpy_s(pDstString, Length, pSrcString, _TRUNCATE);
+ 	}
+@@ -107,7 +107,7 @@ LIBISDB_PRAGMA_MSVC(warning(pop))
+ 		return std::wcsncmp(pString1, pString2, Length);
+ 	}
+ 
+-#if defined(_MSC_VER)
++#if defined(_WIN32)
+ 	inline int StringCompareI(const char *pString1, const char *pString2) {
+ 		return ::_stricmp(pString1, pString2);
+ 	}
+diff --git a/LibISDB/Utilities/Thread.cpp b/LibISDB/Utilities/Thread.cpp
+index f971372..e225c92 100644
+--- a/LibISDB/Utilities/Thread.cpp
++++ b/LibISDB/Utilities/Thread.cpp
+@@ -28,7 +28,7 @@
+ #include "Thread.hpp"
+ #ifdef LIBISDB_WINDOWS
+ #include <process.h>
+-#include <ProcessThreadsApi.h>
++#include <processthreadsapi.h>
+ #else
+ #include <chrono>
+ #endif
+diff --git a/LibISDB/Utilities/Utilities.hpp b/LibISDB/Utilities/Utilities.hpp
+index 3f7573e..428ad76 100644
+--- a/LibISDB/Utilities/Utilities.hpp
++++ b/LibISDB/Utilities/Utilities.hpp
+@@ -81,6 +81,14 @@ namespace LibISDB
+ 
+ #ifndef LIBISDB_ROTATE_INTRINSICS
+ 
++// winnt.h in MinGW-w64 defines these as macros.
++#ifdef RotateLeft32
++#undef RotateLeft32
++#endif
++#ifdef RotateRight32
++#undef RotateRight32
++#endif
++
+ 	LIBISDB_FORCE_INLINE uint32_t RotateLeft32(uint32_t v, int shift) noexcept
+ 	{
+ 		return (v << shift) | (v >> (32 - shift));

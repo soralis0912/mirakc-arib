@@ -132,6 +132,39 @@ running `cmake` with a CMake toolchain file.
 Several CMake toolchain files are included in the
 [toolchain.cmake.d](./toolchain.cmake.d) folder.
 
+### Windows
+
+Windows (x86_64) is supported with MinGW-w64.  Some of vendor libraries are built with CMake files
+in [cmake/windows](./cmake/windows) instead of their own build systems, and patches in
+[patches](./patches) (`*-windows.patch`) are applied to them.
+
+Cross compilation on Linux (or WSL) with [Zig](https://ziglang.org/) as a C/C++ compiler:
+
+```shell
+# `zig` must be in PATH.
+cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Release \
+  -D CMAKE_TOOLCHAIN_FILE=$(pwd)/toolchain.cmake.d/windows-x86_64-zig.cmake
+ninja -C build vendor
+cmake -S . -B build
+ninja -C build mirakc-arib
+```
+
+Native build in the UCRT64 environment of [MSYS2](https://www.msys2.org/):
+
+```shell
+pacman -S git patch mingw-w64-ucrt-x86_64-{cmake,ninja,toolchain}
+cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Release
+ninja -C build vendor
+cmake -S . -B build
+ninja -C build mirakc-arib
+```
+
+Notes:
+
+* Digital tuners in TSDuck are not available (`TS_NO_DIRECTSHOW`).  mirakc-arib doesn't use them
+* The epoch of `ts::Time` is 1601-01-01 on Windows (1970-01-01 on other platforms).  Use
+  `ts::Time::UnixEpoch` instead of `ts::Time()` when a fixed time is needed
+
 ## How to test
 
 ```shell

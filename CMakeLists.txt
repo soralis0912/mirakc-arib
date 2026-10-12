@@ -19,8 +19,8 @@ cmake_minimum_required(VERSION 3.13.0)  # makes it possible to build on Debian/B
 
 project(mirakc-arib)
 
-if(NOT UNIX)
-  message(FATAL_ERROR "Can be built only on Linux and macOS at this moment")
+if(NOT UNIX AND NOT MINGW)
+  message(FATAL_ERROR "Can be built only on Linux, macOS and Windows (MinGW-w64) at this moment")
 endif()
 
 option(MIRAKC_ARIB_COVERAGE "Enable coverage reporting." OFF)
@@ -284,12 +284,20 @@ include(ExternalProject)
 set(MIRAKC_ARIB_VENDOR_DIR ${CMAKE_BINARY_DIR}/vendor)
 set(MIRAKC_ARIB_VENDOR_READY TRUE)
 
-add_custom_target(vendor
-  # Update the build system
-  ${CMAKE_COMMAND} -E echo "Updating the build system..."
-  COMMAND
-    ${CMAKE_COMMAND} -S ${CMAKE_CURRENT_SOURCE_DIR} -B ${CMAKE_BINARY_DIR}
-)
+if(CMAKE_HOST_WIN32)
+  # On Windows, Ninja cannot update its log files while it's running.  Run `cmake` again manually
+  # after building the `vendor` target.
+  add_custom_target(vendor
+    ${CMAKE_COMMAND} -E echo "Run `cmake -S <source> -B <build>` again in order to update the build system"
+  )
+else()
+  add_custom_target(vendor
+    # Update the build system
+    ${CMAKE_COMMAND} -E echo "Updating the build system..."
+    COMMAND
+      ${CMAKE_COMMAND} -S ${CMAKE_CURRENT_SOURCE_DIR} -B ${CMAKE_BINARY_DIR}
+  )
+endif()
 
 # docopt
 
@@ -487,25 +495,42 @@ endif()
 
 # aribb24
 
-ExternalProject_Add(vendor-aribb24
-  PREFIX
-    ${MIRAKC_ARIB_VENDOR_DIR}
-  SOURCE_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/aribb24"
-  CONFIGURE_COMMAND
-    ./bootstrap
-  COMMAND
-    ./configure
-      --prefix=${MIRAKC_ARIB_VENDOR_DIR}
-      --disable-shared --with-pic --without-libpng
-      $<$<BOOL:CMAKE_CROSSCOMPILING>:--host=${CMAKE_C_COMPILER_TARGET}>
-  BUILD_COMMAND
-    make -j ${NPROC}
-  BUILD_IN_SOURCE
-    YES
-  EXCLUDE_FROM_ALL
-    YES
-)
+if(WIN32)
+  # autotools is not available on Windows in most cases.
+  ExternalProject_Add(vendor-aribb24
+    PREFIX
+      ${MIRAKC_ARIB_VENDOR_DIR}
+    SOURCE_DIR
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows/aribb24"
+    CMAKE_ARGS
+      -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -D CMAKE_INSTALL_PREFIX=${MIRAKC_ARIB_VENDOR_DIR}
+      -D CMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+      -D ARIBB24_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/vendor/aribb24
+    EXCLUDE_FROM_ALL
+      YES
+  )
+else()
+  ExternalProject_Add(vendor-aribb24
+    PREFIX
+      ${MIRAKC_ARIB_VENDOR_DIR}
+    SOURCE_DIR
+      "${CMAKE_CURRENT_SOURCE_DIR}/vendor/aribb24"
+    CONFIGURE_COMMAND
+      ./bootstrap
+    COMMAND
+      ./configure
+        --prefix=${MIRAKC_ARIB_VENDOR_DIR}
+        --disable-shared --with-pic --without-libpng
+        $<$<BOOL:CMAKE_CROSSCOMPILING>:--host=${CMAKE_C_COMPILER_TARGET}>
+    BUILD_COMMAND
+      make -j ${NPROC}
+    BUILD_IN_SOURCE
+      YES
+    EXCLUDE_FROM_ALL
+      YES
+  )
+endif()
 
 add_dependencies(vendor vendor-aribb24)
 
@@ -611,27 +636,51 @@ if(${CMAKE_BUILD_TYPE} STREQUAL Debug)
   list(APPEND MIRAKC_ARIB_TSDUCK_DEFS DEBUG=1)
 endif()
 
-ExternalProject_Add(vendor-tsduck-arib
-  DEPENDS
-    vendor-aribb24
-  PREFIX
-    ${MIRAKC_ARIB_VENDOR_DIR}
-  SOURCE_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/tsduck-arib"
-  CONFIGURE_COMMAND
-    ""
-  BUILD_COMMAND
-    rm -rf src/tsplugins src/tstools
-  COMMAND
-    PKG_CONFIG_PATH=${MIRAKC_ARIB_VENDOR_DIR}/lib/pkgconfig
-      make -j ${NPROC} SYSPREFIX=${MIRAKC_ARIB_VENDOR_DIR} ${MIRAKC_ARIB_TSDUCK_DEFS}
-  BUILD_IN_SOURCE
-    YES
-  INSTALL_COMMAND
-    make -j ${NPROC} install-devel SYSPREFIX=${MIRAKC_ARIB_VENDOR_DIR} ${MIRAKC_ARIB_TSDUCK_DEFS}
-  EXCLUDE_FROM_ALL
-    YES
-)
+if(WIN32)
+  # The build system of TSDuck for Windows uses MSBuild.  Use our own CMakeLists.txt instead.
+  ExternalProject_Add(vendor-tsduck-arib
+    DEPENDS
+      vendor-aribb24
+    PREFIX
+      ${MIRAKC_ARIB_VENDOR_DIR}
+    SOURCE_DIR
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows/tsduck-arib"
+    PATCH_COMMAND
+      git -C ${CMAKE_CURRENT_SOURCE_DIR}/vendor/tsduck-arib checkout -f &&
+      git -C ${CMAKE_CURRENT_SOURCE_DIR}/vendor/tsduck-arib apply
+        ${CMAKE_CURRENT_SOURCE_DIR}/patches/tsduck-arib-windows.patch
+    CMAKE_ARGS
+      -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -D CMAKE_INSTALL_PREFIX=${MIRAKC_ARIB_VENDOR_DIR}
+      -D CMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+      -D TSDUCK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/vendor/tsduck-arib
+      -D ARIBB24_INCLUDE_DIR=${MIRAKC_ARIB_VENDOR_DIR}/include
+    EXCLUDE_FROM_ALL
+      YES
+  )
+else()
+  ExternalProject_Add(vendor-tsduck-arib
+    DEPENDS
+      vendor-aribb24
+    PREFIX
+      ${MIRAKC_ARIB_VENDOR_DIR}
+    SOURCE_DIR
+      "${CMAKE_CURRENT_SOURCE_DIR}/vendor/tsduck-arib"
+    CONFIGURE_COMMAND
+      ""
+    BUILD_COMMAND
+      rm -rf src/tsplugins src/tstools
+    COMMAND
+      PKG_CONFIG_PATH=${MIRAKC_ARIB_VENDOR_DIR}/lib/pkgconfig
+        make -j ${NPROC} SYSPREFIX=${MIRAKC_ARIB_VENDOR_DIR} ${MIRAKC_ARIB_TSDUCK_DEFS}
+    BUILD_IN_SOURCE
+      YES
+    INSTALL_COMMAND
+      make -j ${NPROC} install-devel SYSPREFIX=${MIRAKC_ARIB_VENDOR_DIR} ${MIRAKC_ARIB_TSDUCK_DEFS}
+    EXCLUDE_FROM_ALL
+      YES
+  )
+endif()
 
 add_dependencies(vendor vendor-tsduck-arib)
 
@@ -655,6 +704,14 @@ if(tsduck-arib_LIB)
     INTERFACE_LINK_LIBRARIES
       "${CMAKE_THREAD_LIBS_INIT}"
   )
+
+  if(WIN32)
+    # See cmake/windows/tsduck-arib/CMakeLists.txt.
+    set_property(TARGET tsduck-arib::static-lib APPEND PROPERTY
+      INTERFACE_COMPILE_DEFINITIONS "TSDUCK_STATIC=1;TS_NOSRT=1;TS_NO_DIRECTSHOW=1")
+    set_property(TARGET tsduck-arib::static-lib APPEND PROPERTY
+      INTERFACE_LINK_LIBRARIES "ws2_32;wininet;userenv;quartz;strmiids;ksguid;psapi;winmm;ole32;oleaut32;uuid")
+  endif()
 else()
   message(WARNING "tsduck-arib: not found")
   set(MIRAKC_ARIB_VENDOR_READY FALSE)
@@ -662,20 +719,40 @@ endif()
 
 # LibISDB
 
-ExternalProject_Add(vendor-libisdb
-  PREFIX
-    ${MIRAKC_ARIB_VENDOR_DIR}
-  SOURCE_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/libisdb"
-  PATCH_COMMAND
-    git checkout -f && patch -p0 < ${CMAKE_SOURCE_DIR}/patches/LibISDB.patch
-  CMAKE_ARGS
-    -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-    -D CMAKE_INSTALL_PREFIX=${MIRAKC_ARIB_VENDOR_DIR}
-    -D CMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
-  EXCLUDE_FROM_ALL
-    YES
-)
+if(WIN32)
+  ExternalProject_Add(vendor-libisdb
+    PREFIX
+      ${MIRAKC_ARIB_VENDOR_DIR}
+    SOURCE_DIR
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows/libisdb"
+    PATCH_COMMAND
+      git -C ${CMAKE_CURRENT_SOURCE_DIR}/vendor/libisdb checkout -f &&
+      git -C ${CMAKE_CURRENT_SOURCE_DIR}/vendor/libisdb apply
+        ${CMAKE_CURRENT_SOURCE_DIR}/patches/LibISDB-windows.patch
+    CMAKE_ARGS
+      -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -D CMAKE_INSTALL_PREFIX=${MIRAKC_ARIB_VENDOR_DIR}
+      -D CMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+      -D LIBISDB_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/vendor/libisdb
+    EXCLUDE_FROM_ALL
+      YES
+  )
+else()
+  ExternalProject_Add(vendor-libisdb
+    PREFIX
+      ${MIRAKC_ARIB_VENDOR_DIR}
+    SOURCE_DIR
+      "${CMAKE_CURRENT_SOURCE_DIR}/vendor/libisdb"
+    PATCH_COMMAND
+      git checkout -f && patch -p0 < ${CMAKE_SOURCE_DIR}/patches/LibISDB.patch
+    CMAKE_ARGS
+      -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -D CMAKE_INSTALL_PREFIX=${MIRAKC_ARIB_VENDOR_DIR}
+      -D CMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+    EXCLUDE_FROM_ALL
+      YES
+  )
+endif()
 
 add_dependencies(vendor vendor-libisdb)
 
@@ -698,6 +775,15 @@ if(libisdb_LIB)
     INTERFACE_LINK_LIBRARIES
       "${CMAKE_THREAD_LIBS_INIT}"
   )
+
+  if(WIN32)
+    # See cmake/windows/libisdb/CMakeLists.txt.
+    set_property(TARGET libisdb::static-lib APPEND PROPERTY
+      INTERFACE_COMPILE_DEFINITIONS "LIBISDB_FORCE_UTF8")
+    set_property(TARGET libisdb::static-lib APPEND PROPERTY
+      INTERFACE_COMPILE_OPTIONS
+        "-include;${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows/compat/libcxx_char_traits.hpp")
+  endif()
 else()
   message(WARNING "LibISDB: not found")
   set(MIRAKC_ARIB_VENDOR_READY FALSE)
@@ -745,6 +831,12 @@ if(MIRAKC_ARIB_TEST)
 
   # Google Benchmark
 
+  set(MIRAKC_ARIB_GOOGLE_BENCHMARK_EXTRA_ARGS)
+  if(WIN32)
+    # Some warnings are reported on Windows (MinGW-w64).
+    list(APPEND MIRAKC_ARIB_GOOGLE_BENCHMARK_EXTRA_ARGS -D BENCHMARK_ENABLE_WERROR=OFF)
+  endif()
+
   ExternalProject_Add(vendor-google-benchmark
     PREFIX
       ${MIRAKC_ARIB_VENDOR_DIR}
@@ -755,6 +847,7 @@ if(MIRAKC_ARIB_TEST)
       -D CMAKE_INSTALL_PREFIX=${MIRAKC_ARIB_VENDOR_DIR}
       -D CMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
       -D BENCHMARK_ENABLE_TESTING=OFF
+      ${MIRAKC_ARIB_GOOGLE_BENCHMARK_EXTRA_ARGS}
     EXCLUDE_FROM_ALL
       YES
   )
@@ -824,6 +917,11 @@ set_target_properties(mirakc-arib
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
 )
+
+if(WIN32)
+  # Make the executable self-contained (no dependency on libstdc++ DLLs in MinGW-w64).
+  target_link_options(mirakc-arib PRIVATE -static)
+endif()
 
 target_link_libraries(mirakc-arib
   PRIVATE
